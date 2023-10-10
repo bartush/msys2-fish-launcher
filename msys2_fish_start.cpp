@@ -8,15 +8,13 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <wchar.h>
+#include <iostream>
+#include <sstream>
+#include <utility>
+#include <string>
+
 
 int _CRT_glob = 0;
-
-// macros copied from "macros.h"
-#define UNUSED(x) ((void)(x))
-#define STRINGIFY_A_(x) #x
-#define STRINGIFY_A(x) STRINGIFY_A_(x)
-#define STRINGIFY_W_(x) L ## #x
-#define STRINGIFY_W(x) STRINGIFY_W_(x)
 
 // if any of the properties change, it's best to use a brand new AppID
 #define APPID_REVISION 13
@@ -62,6 +60,36 @@ static unsigned int APHash(const wchar_t* str, size_t length)
 	}
 
     return hash;
+}
+
+static HWND FindTopWindow(DWORD pid)
+{
+    std::pair<HWND, DWORD> params = { 0, pid };
+
+    // Enumerate the windows using a lambda to process each window
+    BOOL bResult = EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL
+    {
+        auto pParams = (std::pair<HWND, DWORD>*)(lParam);
+
+        DWORD processId;
+        if (GetWindowThreadProcessId(hwnd, &processId) && processId == pParams->second)
+        {
+            // Stop enumerating
+            SetLastError(-1);
+            pParams->first = hwnd;
+            return FALSE;
+        }
+
+        // Continue enumerating
+        return TRUE;
+    }, (LPARAM)&params);
+
+    if (!bResult && GetLastError() == -1 && params.first)
+    {
+        return params.first;
+    }
+
+    return 0;
 }
 
 static PROCESS_INFORMATION StartChild(wchar_t* cmdline)
@@ -265,7 +293,7 @@ int wmain(int argc, wchar_t* argv[])
 		}
 	}
 
-    msystem = SetEnv(confpath);
+    msystem = L"UCRT64";//SetEnv(confpath);
     if (msystem == NULL)
 	{
 	    ShowError(L"Did not find the MSYSTEM variable", confpath, 0);
@@ -336,5 +364,20 @@ int wmain(int argc, wchar_t* argv[])
 	free(buf);
 	buf = NULL;
 
+	DWORD processID = child.dwProcessId;
+	HWND hWnd = FindTopWindow(processID);
+	// if (hWnd != NULL)
+	//     {
+	// 	::MessageBox(NULL, L"Window found!", L"Launcher", MB_ICONEXCLAMATION | MB_OK );
+	//     }
+	// else
+	//     {
+	// 	std::wostringstream wstr;
+	// 	wstr << L"Window for proces ID ";
+	// 	wstr << processID;
+	// 	wstr << " was not found!";
+	// 	const auto& str = wstr.str();
+	// 	::MessageBox(NULL, str.c_str(), L"Launcher", MB_ICONEXCLAMATION | MB_OK);
+	//     }
 	return 0;
 }
