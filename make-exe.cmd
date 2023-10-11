@@ -1,9 +1,9 @@
-windres msys2_fish_launcher.rc -O coff -o msys2_fish_launcher.res
-gcc -std=c11 -Wall -Wextra -static -municode -mwindows -o ucrt64_fish_launcher.exe msys2_fish_launcher.c msys2_fish_launcher.res
+windres msys2-fish-launcher.rc -O coff -o msys2-fish-launcher.res
+gcc -std=c11 -Wall -Wextra -static -municode -mwindows -o ucrt64-fish-launcher.exe msys2-fish-launcher.c msys2-fish-launcher.res
 ::removed -Werror 
 
 if %errorlevel%==0 (
    echo "Sucess!"
-   cp ucrt64_fish_launcher.exe c:/msys64
-   start c:/msys64/ucrt64_fish_launcher.exe
+   cp ucrt64-fish-launcher.exe c:/msys64
+   start c:/msys64/ucrt64-fish-launcher.exe
 )
