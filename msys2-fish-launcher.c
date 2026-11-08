@@ -293,7 +293,7 @@ int wmain(int argc, wchar_t* argv[])
     }
     *tmp = L'\0';
 
-    // the launcher must reside in the MSYS2 root folder (e.g. C:\msys64).
+    // the launcher must reside in the MSYS2 root folder.
     // verify by checking for <exedir>\usr\bin\mintty.exe
     {
 	wchar_t probe[PATH_MAX];
@@ -312,14 +312,7 @@ int wmain(int argc, wchar_t* argv[])
 	ShowError(L"Could not allocate memory", L"", 0);
 	return __LINE__;
     }
-    if (wcsicmp(msysdir, L"C:\\msys64") == 0)
-    {
-	code = swprintf(msysdirhash, 10, L""); // no change in AppID for default installations
-    }
-    else
-    {
-	code = swprintf(msysdirhash, 10, L".%8x", APHash(msysdir, wcslen(msysdir)));
-    }
+    code = swprintf(msysdirhash, 10, L".%8x", APHash(msysdir, wcslen(msysdir)));
     if (code < 0)
     {
 	ShowErrno(L"Could not write to buffer");
