@@ -240,6 +240,24 @@ static HWND FindNewestMinttyWindow(void)
     return hwnd;
 }
 
+// register the AppUserModelID with a display name and icon so the Windows 11
+// taskbar shows the fish icon for our windows. The XAML taskbar resolves the
+// button icon by AUMID (falling back to the owning exe's icon), not by the
+// live window icon, so an unregistered AUMID yields a generic placeholder.
+static void RegisterAppUserModel(const wchar_t* aumid)
+{
+    wchar_t regpath[512];
+    HKEY hkey;
+    static const wchar_t display_name[] = L"MSYS2 UCRT64 Fish Shell";
+
+    swprintf(regpath, ARRAYSIZE(regpath), L"Software\\Classes\\AppUserModelId\\%ls", aumid);
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, regpath, 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL) != ERROR_SUCCESS)
+        return;
+    RegSetValueExW(hkey, L"DisplayName", 0, REG_SZ, (const BYTE*)display_name, sizeof(display_name));
+    RegDeleteValueW(hkey, L"IconUri"); // clean up from earlier builds
+    RegCloseKey(hkey);
+}
+
 int wmain(int argc, wchar_t* argv[])
 {
     (void)(argc);
@@ -257,6 +275,7 @@ int wmain(int argc, wchar_t* argv[])
     wchar_t* msysdirhash;
     wchar_t msysdir[PATH_MAX];
     wchar_t exepath[PATH_MAX];
+    wchar_t appid[64];
 
     code = GetModuleFileName(NULL, exepath, sizeof(exepath) / sizeof(*exepath));
     if (code == 0)
@@ -274,21 +293,16 @@ int wmain(int argc, wchar_t* argv[])
     }
     *tmp = L'\0';
 
-    // the launcher may be run from any folder; fall back to the default
-    // MSYS2 installation if mintty is not next to the executable
+    // the launcher must reside in the MSYS2 root folder (e.g. C:\msys64).
+    // verify by checking for <exedir>\usr\bin\mintty.exe
     {
 	wchar_t probe[PATH_MAX];
 
 	swprintf(probe, PATH_MAX, L"%ls\\usr\\bin\\mintty.exe", msysdir);
 	if (GetFileAttributesW(probe) == INVALID_FILE_ATTRIBUTES)
 	{
-		wcscpy(msysdir, L"C:\\msys64");
-		swprintf(probe, PATH_MAX, L"%ls\\usr\\bin\\mintty.exe", msysdir);
-		if (GetFileAttributesW(probe) == INVALID_FILE_ATTRIBUTES)
-		{
-			ShowError(L"Could not find mintty.exe in the executable folder or in the default MSYS2 installation", L"C:\\msys64", 0);
-			return __LINE__;
-		}
+		ShowError(L"Launcher must be placed in the MSYS2 root folder (mintty.exe not found in)", msysdir, 0);
+		return __LINE__;
 	}
     }
 
@@ -330,6 +344,11 @@ int wmain(int argc, wchar_t* argv[])
 	ShowLastError(L"Could not set environment variable");
     }
 
+    // build the AppUserModelID and register it with the fish icon so the
+    // Windows 11 taskbar shows our icon for these windows
+    swprintf(appid, ARRAYSIZE(appid), L"MSYS2.FishShell.%ls.%d%ls", msystem, APPID_REVISION, msysdirhash);
+    RegisterAppUserModel(appid);
+
     code = -1;
     buf = NULL;
     buflen = 1024;
@@ -344,10 +363,10 @@ int wmain(int argc, wchar_t* argv[])
 
 	code = swprintf(buf, buflen,
 			L"%ls\\usr\\bin\\mintty.exe -i '%ls' -o 'AppLaunchCmd=%ls'"
-			L" -o 'AppID=MSYS2.FishShell.%ls.%d%ls' -o 'AppName=MSYS2 %ls Fish Shell'"
+			L" -o 'AppID=%ls' -o 'AppName=MSYS2 %ls Fish Shell'"
 			L" -t 'MSYS2 %ls Fish Shell' --store-taskbar-properties -- %ls %ls",
 			msysdir, exepath, exepath,
-			msystem, APPID_REVISION, msysdirhash, msystem,
+			appid, msystem,
 			msystem, L"/usr/bin/sh -lc '\"$@\"' sh", start_app);
 	buflen *= 2;
     }
@@ -357,12 +376,25 @@ int wmain(int argc, wchar_t* argv[])
 	return __LINE__;
     }
 
-    // create a job object so we can kill the entire process tree later
+    // create a job object so we can kill the entire process tree later.
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ensures all children are terminated
+    // when the launcher exits (normal or crash), preventing orphans.
     g_job = CreateJobObjectW(NULL, NULL);
     if (g_job == NULL)
     {
         ShowLastError(L"Could not create job object");
         return __LINE__;
+    }
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {0};
+        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(g_job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli)))
+        {
+            ShowLastError(L"Could not set job object limits");
+            CloseHandle(g_job);
+            g_job = NULL;
+            return __LINE__;
+        }
     }
 
     child = StartChild(buf);
@@ -377,6 +409,7 @@ int wmain(int argc, wchar_t* argv[])
     if (!AssignProcessToJobObject(g_job, child.hProcess))
     {
         ShowLastError(L"Could not assign process to job object");
+        TerminateJobObject(g_job, 0);
         CloseHandle(child.hProcess);
         CloseHandle(child.hThread);
         CloseHandle(g_job);
@@ -398,6 +431,9 @@ int wmain(int argc, wchar_t* argv[])
         if (RegisterClassExW(&wc) == 0)
         {
             ShowLastError(L"Could not register tray window class");
+            TerminateJobObject(g_job, 0);
+            CloseHandle(child.hProcess);
+            CloseHandle(child.hThread);
             return __LINE__;
         }
         // a real (hidden) top-level window is required for reliable tray
@@ -406,12 +442,18 @@ int wmain(int argc, wchar_t* argv[])
         if (g_hwnd == NULL)
         {
             ShowLastError(L"Could not create tray window");
+            TerminateJobObject(g_job, 0);
+            CloseHandle(child.hProcess);
+            CloseHandle(child.hThread);
             return __LINE__;
         }
 
         if (ExtractIconExW(exepath, 0, &g_hicon, NULL, 1) != 1 || g_hicon == NULL)
         {
             ShowLastError(L"Could not load tray icon");
+            TerminateJobObject(g_job, 0);
+            CloseHandle(child.hProcess);
+            CloseHandle(child.hThread);
             return __LINE__;
         }
 

@@ -4,5 +4,4 @@ gcc -std=c11 -Wall -Wextra -static -municode -mwindows -o msys2-fish-launcher.ex
 
 if %errorlevel%==0 (
    echo "Sucess!"
-   start msys2-fish-launcher.exe
 )
