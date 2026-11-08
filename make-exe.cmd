@@ -4,6 +4,5 @@ gcc -std=c11 -Wall -Wextra -static -municode -mwindows -o ucrt64-fish-launcher.e
 
 if %errorlevel%==0 (
    echo "Sucess!"
-   cp ucrt64-fish-launcher.exe c:/msys64
-   start c:/msys64/ucrt64-fish-launcher.exe
+   start ucrt64-fish-launcher.exe
 )

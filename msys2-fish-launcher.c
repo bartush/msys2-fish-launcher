@@ -5,6 +5,7 @@
 #define PSAPI_VERSION 1
 
 #include <windows.h>
+#include <shellapi.h>
 #include <stdio.h>
 
 
@@ -12,6 +13,16 @@ int _CRT_glob = 0;
 
 // if any of the properties change, it's best to use a brand new AppID
 #define APPID_REVISION 13
+
+#define WM_TRAYICON (WM_APP + 1)
+#define TRAY_POLL_MS 500
+
+static HWND g_hwnd = NULL;      // message-only window for tray callbacks
+static HICON g_hicon = NULL;    // tray icon, loaded from resources
+static HWND g_term = NULL;      // terminal (mintty) window
+static int g_tray_visible = 0;
+static DWORD g_menu_shown_tick = 0; // suppress spurious left-clicks after context menu
+static NOTIFYICONDATAW g_nid;
 
 static void ShowError(const wchar_t* desc, const wchar_t* err, const long code)
 {
@@ -77,6 +88,148 @@ static PROCESS_INFORMATION StartChild(wchar_t* cmdline)
     return pi;
 }
 
+static void TrayUpdateTooltip(void)
+{
+    wchar_t title[256];
+
+    if (g_term == NULL || !IsWindow(g_term))
+        return;
+    if (GetWindowTextW(g_term, title, 256) == 0)
+        return;
+    wcsncpy(g_nid.szTip, title, ARRAYSIZE(g_nid.szTip) - 1);
+    g_nid.szTip[ARRAYSIZE(g_nid.szTip) - 1] = L'\0';
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+}
+
+static void TrayShow(void)
+{
+    if (g_tray_visible)
+        return;
+    if (Shell_NotifyIconW(NIM_ADD, &g_nid) == 0)
+    {
+        ShowLastError(L"Could not add tray icon");
+        return;
+    }
+    g_tray_visible = 1;
+}
+
+static void TrayHide(void)
+{
+    if (!g_tray_visible)
+        return;
+    Shell_NotifyIconW(NIM_DELETE, &g_nid);
+    g_tray_visible = 0;
+}
+
+static void ShowTerminal(void)
+{
+    if (g_term != NULL && IsWindow(g_term))
+    {
+        ShowWindow(g_term, SW_RESTORE);
+        SetForegroundWindow(g_term);
+    }
+    TrayHide();
+}
+
+static void CloseTerminal(void)
+{
+    if (g_term != NULL && IsWindow(g_term))
+        PostMessageW(g_term, WM_CLOSE, 0, 0);
+}
+
+static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_TRAYICON:
+        if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK)
+        {
+            // ignore spurious left-clicks within 1s after context menu
+            if (GetTickCount() - g_menu_shown_tick < 1000)
+                return 0;
+            ShowTerminal();
+        }
+        else if (lParam == WM_RBUTTONUP)
+        {
+            HMENU menu;
+            POINT pt;
+            UINT cmd;
+
+            g_menu_shown_tick = GetTickCount();
+            menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING, 1, L"Show");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(menu, MF_STRING, 2, L"Close terminal");
+            GetCursorPos(&pt);
+            SetForegroundWindow(hwnd);
+            cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+            DestroyMenu(menu);
+            if (cmd == 1)
+                ShowTerminal();
+            else if (cmd == 2)
+                CloseTerminal();
+        }
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+struct FindCtx
+{
+    DWORD pid;
+    HWND hwnd;
+};
+
+static BOOL CALLBACK EnumFindProc(HWND hwnd, LPARAM lparam)
+{
+    struct FindCtx* ctx = (struct FindCtx*)lparam;
+    DWORD out;
+
+    if (GetWindowThreadProcessId(hwnd, &out) == 0)
+        return TRUE;
+    if (out != ctx->pid)
+        return TRUE;
+    if (!IsWindowVisible(hwnd))
+        return TRUE;
+    if (GetAncestor(hwnd, GA_ROOT) != hwnd)
+        return TRUE;
+    ctx->hwnd = hwnd;
+    return FALSE;
+}
+
+static HWND FindTerminalWindow(DWORD pid)
+{
+    struct FindCtx ctx;
+
+    ctx.pid = pid;
+    ctx.hwnd = NULL;
+    EnumWindows(EnumFindProc, (LPARAM)&ctx);
+    return ctx.hwnd;
+}
+
+// a freshly created window is at the top of the Z-order, so the first
+// visible mintty window in EnumWindows order is the newest one
+static BOOL CALLBACK EnumFirstMinttyProc(HWND hwnd, LPARAM lparam)
+{
+    wchar_t cls[32];
+
+    if (GetClassNameW(hwnd, cls, 32) == 0 || _wcsicmp(cls, L"mintty") != 0)
+        return TRUE;
+    if (!IsWindowVisible(hwnd))
+        return TRUE;
+    *(HWND*)lparam = hwnd;
+    return FALSE;
+}
+
+static HWND FindNewestMinttyWindow(void)
+{
+    HWND hwnd = NULL;
+
+    EnumWindows(EnumFirstMinttyProc, (LPARAM)&hwnd);
+    return hwnd;
+}
+
 int wmain(int argc, wchar_t* argv[])
 {
     (void)(argc);
@@ -110,6 +263,24 @@ int wmain(int argc, wchar_t* argv[])
 	return __LINE__;
     }
     *tmp = L'\0';
+
+    // the launcher may be run from any folder; fall back to the default
+    // MSYS2 installation if mintty is not next to the executable
+    {
+	wchar_t probe[PATH_MAX];
+
+	swprintf(probe, PATH_MAX, L"%ls\\usr\\bin\\mintty.exe", msysdir);
+	if (GetFileAttributesW(probe) == INVALID_FILE_ATTRIBUTES)
+	{
+		wcscpy(msysdir, L"C:\\msys64");
+		swprintf(probe, PATH_MAX, L"%ls\\usr\\bin\\mintty.exe", msysdir);
+		if (GetFileAttributesW(probe) == INVALID_FILE_ATTRIBUTES)
+		{
+			ShowError(L"Could not find mintty.exe in the executable folder or in the default MSYS2 installation", L"C:\\msys64", 0);
+			return __LINE__;
+		}
+	}
+    }
 
     msysdirhash = (wchar_t*)alloca(10 * sizeof(wchar_t)); // dot + unsigned int as %x + null
     if (msysdirhash == NULL)
@@ -163,8 +334,8 @@ int wmain(int argc, wchar_t* argv[])
 
 	code = swprintf(buf, buflen,
 			L"%ls\\usr\\bin\\mintty.exe -i '%ls' -o 'AppLaunchCmd=%ls'"
-			L" -o 'AppID=MSYS2.Shell.%ls.%d%ls' -o 'AppName=MSYS2 %ls Shell'"
-			L" -t 'MSYS2 %ls Shell' --store-taskbar-properties -- %ls %ls",
+			L" -o 'AppID=MSYS2.FishShell.%ls.%d%ls' -o 'AppName=MSYS2 %ls Fish Shell'"
+			L" -t 'MSYS2 %ls Fish Shell' --store-taskbar-properties -- %ls %ls",
 			msysdir, exepath, exepath,
 			msystem, APPID_REVISION, msysdirhash, msystem,
 			msystem, L"/usr/bin/sh -lc '\"$@\"' sh", start_app);
@@ -184,5 +355,87 @@ int wmain(int argc, wchar_t* argv[])
 
     free(buf);
     buf = NULL;
+    // tray setup: message-only window + icon from resources
+    {
+        WNDCLASSEXW wc;
+
+        ZeroMemory(&wc, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = TrayWndProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.lpszClassName = L"MSYS2FishLauncherTray";
+        if (RegisterClassExW(&wc) == 0)
+        {
+            ShowLastError(L"Could not register tray window class");
+            return __LINE__;
+        }
+        // a real (hidden) top-level window is required for reliable tray
+        // callbacks; message-only windows do not receive mouse messages
+        g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"", WS_OVERLAPPED, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
+        if (g_hwnd == NULL)
+        {
+            ShowLastError(L"Could not create tray window");
+            return __LINE__;
+        }
+
+        if (ExtractIconExW(exepath, 0, &g_hicon, NULL, 1) != 1 || g_hicon == NULL)
+        {
+            ShowLastError(L"Could not load tray icon");
+            return __LINE__;
+        }
+
+        ZeroMemory(&g_nid, sizeof(g_nid));
+        g_nid.cbSize = sizeof(g_nid);
+        g_nid.hWnd = g_hwnd;
+        g_nid.uID = 1;
+        // NIF_MESSAGE is required for uCallbackMessage to be delivered
+        g_nid.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP | NIF_MESSAGE;
+        g_nid.hIcon = g_hicon;
+        g_nid.uCallbackMessage = WM_TRAYICON;
+    }
+
+    // main loop: watch the terminal, move it to the tray when minimized.
+    // mintty re-execs itself (new PID, same window), so once the window is
+    // found we track the HWND, not the process.
+    for (;;)
+    {
+        MSG msg;
+
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+
+        if (g_term == NULL)
+        {
+            HWND term = FindTerminalWindow(child.dwProcessId);
+            if (term == NULL && WaitForSingleObject(child.hProcess, 0) == WAIT_OBJECT_0)
+                term = FindNewestMinttyWindow(); // mintty re-exec'd: find its new window
+            if (term != NULL)
+                g_term = term;
+            else if (WaitForSingleObject(child.hProcess, 0) == WAIT_OBJECT_0)
+                break; // child exited and no window found
+        }
+        else
+        {
+            if (!IsWindow(g_term))
+                break; // terminal window destroyed
+            if (IsIconic(g_term))
+            {
+                ShowWindow(g_term, SW_HIDE);
+                TrayUpdateTooltip();
+                TrayShow();
+            }
+            else if (g_tray_visible)
+                TrayHide();
+        }
+        Sleep(TRAY_POLL_MS);
+    }
+
+    TrayHide();
+    DestroyWindow(g_hwnd);
+    CloseHandle(child.hProcess);
+    CloseHandle(child.hThread);
     return 0;
 }
