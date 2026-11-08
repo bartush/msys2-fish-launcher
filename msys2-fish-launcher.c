@@ -20,7 +20,9 @@ int _CRT_glob = 0;
 static HWND g_hwnd = NULL;      // message-only window for tray callbacks
 static HICON g_hicon = NULL;    // tray icon, loaded from resources
 static HWND g_term = NULL;      // terminal (mintty) window
+static HANDLE g_job = NULL;     // job object: kills entire process tree
 static int g_tray_visible = 0;
+static int g_closing = 0;
 static DWORD g_menu_shown_tick = 0; // suppress spurious left-clicks after context menu
 static NOTIFYICONDATAW g_nid;
 
@@ -123,6 +125,8 @@ static void TrayHide(void)
 
 static void ShowTerminal(void)
 {
+    if (g_closing)
+        return;
     if (g_term != NULL && IsWindow(g_term))
     {
         ShowWindow(g_term, SW_RESTORE);
@@ -133,8 +137,10 @@ static void ShowTerminal(void)
 
 static void CloseTerminal(void)
 {
-    if (g_term != NULL && IsWindow(g_term))
-        PostMessageW(g_term, WM_CLOSE, 0, 0);
+    g_closing = 1;
+    if (g_job != NULL)
+        TerminateJobObject(g_job, 0);
+    g_term = NULL;
 }
 
 static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -164,11 +170,15 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             SetForegroundWindow(hwnd);
             cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
             DestroyMenu(menu);
-            if (cmd == 1)
-                ShowTerminal();
-            else if (cmd == 2)
-                CloseTerminal();
+            // MSDN: must send WM_COMMAND after TrackPopupMenu
+            SendMessageW(hwnd, WM_COMMAND, cmd, 0);
         }
+        return 0;
+    case WM_COMMAND:
+        if (wParam == 1)
+            ShowTerminal();
+        else if (wParam == 2)
+            CloseTerminal();
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -347,9 +357,30 @@ int wmain(int argc, wchar_t* argv[])
 	return __LINE__;
     }
 
+    // create a job object so we can kill the entire process tree later
+    g_job = CreateJobObjectW(NULL, NULL);
+    if (g_job == NULL)
+    {
+        ShowLastError(L"Could not create job object");
+        return __LINE__;
+    }
+
     child = StartChild(buf);
     if (child.hProcess == NULL)
     {
+	CloseHandle(g_job);
+	g_job = NULL;
+	return __LINE__;
+    }
+
+    // assign the child to the job object; all descendants inherit it
+    if (!AssignProcessToJobObject(g_job, child.hProcess))
+    {
+        ShowLastError(L"Could not assign process to job object");
+        CloseHandle(child.hProcess);
+        CloseHandle(child.hThread);
+        CloseHandle(g_job);
+        g_job = NULL;
 	return __LINE__;
     }
 
@@ -407,6 +438,8 @@ int wmain(int argc, wchar_t* argv[])
             DispatchMessageW(&msg);
         }
 
+        if (g_closing)
+            break;
         if (g_term == NULL)
         {
             HWND term = FindTerminalWindow(child.dwProcessId);
@@ -435,6 +468,8 @@ int wmain(int argc, wchar_t* argv[])
 
     TrayHide();
     DestroyWindow(g_hwnd);
+    if (g_job != NULL)
+        CloseHandle(g_job);
     CloseHandle(child.hProcess);
     CloseHandle(child.hThread);
     return 0;
