@@ -258,13 +258,39 @@ static void RegisterAppUserModel(const wchar_t* aumid)
     RegCloseKey(hkey);
 }
 
+// Parse command-line arguments to select the MSYS2 subsystem.
+// Recognized flags (mirroring msys2_shell.cmd):
+//   -msys | -msys2     -> MSYS
+//   -mingw32           -> MINGW32
+//   -mingw64           -> MINGW64
+//   -ucrt64            -> UCRT64
+//   -clang64           -> CLANG64
+//   -clangarm64        -> CLANGARM64
+// Default: UCRT64
+static const wchar_t* ParseSubsystem(int argc, wchar_t* argv[])
+{
+    for (int i = 1; i < argc; i++)
+    {
+	if (wcscmp(argv[i], L"-msys") == 0 || wcscmp(argv[i], L"-msys2") == 0)
+	    return L"MSYS";
+	if (wcscmp(argv[i], L"-mingw32") == 0)
+	    return L"MINGW32";
+	if (wcscmp(argv[i], L"-mingw64") == 0)
+	    return L"MINGW64";
+	if (wcscmp(argv[i], L"-ucrt64") == 0)
+	    return L"UCRT64";
+	if (wcscmp(argv[i], L"-clang64") == 0)
+	    return L"CLANG64";
+	if (wcscmp(argv[i], L"-clangarm64") == 0)
+	    return L"CLANGARM64";
+    }
+    return L"UCRT64";
+}
+
 int wmain(int argc, wchar_t* argv[])
 {
-    (void)(argc);
-    (void)(argv);
-
-    // Set MSYS to persistent UCRT64
-    const wchar_t msystem[] = L"UCRT64";
+    // Select the MSYS2 subsystem from the command line (default UCRT64)
+    const wchar_t* msystem = ParseSubsystem(argc, argv);
     const wchar_t start_app[] = L"fish";
 
     PROCESS_INFORMATION child;
