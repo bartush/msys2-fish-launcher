@@ -1,1 +1,67 @@
-#+title: MSYS2 fish shell launcher using UCRT64 environment (based on [[https://github.com/msys2/msys2-launcher][msys2-launcher]])
+#+title: MSYS2 Fish Shell Launcher
+#+subtitle: Launches a fish shell terminal in a selected MSYS2 subsystem with tray icon support
+
+* Description
+A Windows GUI launcher that starts a *fish* shell inside an MSYS2
+subsystem (UCRT64, MINGW64, etc.) using mintty. Based on
+[[https://github.com/msys2/msys2-launcher][msys2-launcher]].
+
+* Features
+- Select MSYS2 subsystem via =-msystem= (default: UCRT64)
+- Run a one-shot fish command via =-c 'COMMAND'=
+- Tray icon: minimize to tray, left-click to restore, right-click menu
+  (=Show= / =Close terminal=)
+- Separate taskbar grouping and fish icon per subsystem
+- Job Object: all child processes (mintty/sh/fish) are killed on exit,
+  preventing orphaned processes
+- Launcher must reside in the MSYS2 root folder (auto-detected)
+
+* Requirements
+- MSYS2 installed
+- =fish= package installed in the target subsystem::
+  #+begin_src sh
+  pacman -S --needed fish
+  #+end_src
+- The launcher executable must be placed in the MSYS2 root directory
+  (e.g. =C:\msys64\msys2-fish-launcher.exe=)
+
+* Usage
+#+begin_src sh
+msys2-fish-launcher.exe [OPTIONS]
+
+  -msystem NAME    MSYS2 subsystem: MSYS, MINGW32, MINGW64, UCRT64,
+                  CLANG64, CLANGARM64 (default: UCRT64)
+  -c 'COMMAND'     Run COMMAND in fish and exit when done
+
+Examples:
+  msys2-fish-launcher.exe
+  msys2-fish-launcher.exe -msystem MINGW64
+  msys2-fish-launcher.exe -c 'echo hello'
+  msys2-fish-launcher.exe -msystem CLANG64 -c 'fish -i; echo done'
+#+end_src
+
+* Build
+#+begin_src sh
+cd /d/dev/msys2-fish-launcher
+cmd //c make-exe.cmd
+#+end_src
+
+Output: =msys2-fish-launcher.exe= (static, no runtime dependencies).
+
+Copy to the MSYS2 root before use:
+#+begin_src sh
+cp msys2-fish-launcher.exe /c/msys64/
+#+end_src
+
+* How it works
+1. Determines the MSYS2 root from its own location (requires
+   =<root>\usr\bin\mintty.exe= to exist).
+2. Builds a unique AppUserModelID (=MSYS2.FishShell.<SUBSYS>.13.<hash>=)
+   and registers it so Windows 11 shows the fish icon and a separate
+   taskbar button.
+3. Launches mintty with a temporary unique window title, finds the
+   window by that title (survives mintty re-exec), then switches to
+   the real title.
+4. Polls the window: minimizes to tray on minimize, restores on
+   tray click. Uses a Job Object to kill the entire process tree on
+   exit.
