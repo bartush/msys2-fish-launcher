@@ -185,59 +185,33 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
 }
 
-struct FindCtx
+
+
+struct FindTitleCtx
 {
-    DWORD pid;
+    const wchar_t* title;
     HWND hwnd;
 };
 
-static BOOL CALLBACK EnumFindProc(HWND hwnd, LPARAM lparam)
+static BOOL CALLBACK FindByTitleProc(HWND hwnd, LPARAM lparam)
 {
-    struct FindCtx* ctx = (struct FindCtx*)lparam;
-    DWORD out;
-
-    if (GetWindowThreadProcessId(hwnd, &out) == 0)
-        return TRUE;
-    if (out != ctx->pid)
-        return TRUE;
-    if (!IsWindowVisible(hwnd))
-        return TRUE;
-    if (GetAncestor(hwnd, GA_ROOT) != hwnd)
-        return TRUE;
-    ctx->hwnd = hwnd;
-    return FALSE;
+    struct FindTitleCtx* ctx = (struct FindTitleCtx*)lparam;
+    wchar_t buf[256];
+    GetWindowTextW(hwnd, buf, 256);
+    // prefix match: mintty may append extra chars to the title
+    if (wcslen(buf) >= wcslen(ctx->title) && wcsncmp(buf, ctx->title, wcslen(ctx->title)) == 0)
+    {
+        ctx->hwnd = hwnd;
+        return FALSE; // stop enumeration
+    }
+    return TRUE;
 }
 
-static HWND FindTerminalWindow(DWORD pid)
+static HWND FindWindowByTitle(const wchar_t* title)
 {
-    struct FindCtx ctx;
-
-    ctx.pid = pid;
-    ctx.hwnd = NULL;
-    EnumWindows(EnumFindProc, (LPARAM)&ctx);
+    struct FindTitleCtx ctx = { title, NULL };
+    EnumWindows(FindByTitleProc, (LPARAM)&ctx);
     return ctx.hwnd;
-}
-
-// a freshly created window is at the top of the Z-order, so the first
-// visible mintty window in EnumWindows order is the newest one
-static BOOL CALLBACK EnumFirstMinttyProc(HWND hwnd, LPARAM lparam)
-{
-    wchar_t cls[32];
-
-    if (GetClassNameW(hwnd, cls, 32) == 0 || _wcsicmp(cls, L"mintty") != 0)
-        return TRUE;
-    if (!IsWindowVisible(hwnd))
-        return TRUE;
-    *(HWND*)lparam = hwnd;
-    return FALSE;
-}
-
-static HWND FindNewestMinttyWindow(void)
-{
-    HWND hwnd = NULL;
-
-    EnumWindows(EnumFirstMinttyProc, (LPARAM)&hwnd);
-    return hwnd;
 }
 
 // register the AppUserModelID with a display name and icon so the Windows 11
@@ -340,10 +314,10 @@ int wmain(int argc, wchar_t* argv[])
     if (msystem == NULL)
 	return __LINE__;
 
-    // Build the fish start command: plain "fish" or "fish -c '<cmd>; fish -i'"
-    // The command is embedded directly in the command line, with single
-    // quotes escaped so it survives the sh layers intact. 'fish -i' keeps
-    // the terminal open after the command finishes.
+    // Build the fish start command: plain "fish" (interactive) or
+    // "fish -c '<cmd>'" (run command, then exit). The command is embedded
+    // directly in the command line, with single quotes escaped so it
+    // survives the sh layers intact.
     wchar_t start_app_buf[4096] = L"fish";
     {
 	const wchar_t* fishcmd = ParseFishCommand(argc, argv);
@@ -353,7 +327,7 @@ int wmain(int argc, wchar_t* argv[])
 		if (escaped != NULL)
 		{
 			swprintf(start_app_buf, ARRAYSIZE(start_app_buf),
-				L"fish -c '%ls; fish -i'", escaped);
+				L"fish -c '%ls'", escaped);
 			free(escaped);
 		}
 	}
@@ -369,6 +343,13 @@ int wmain(int argc, wchar_t* argv[])
     wchar_t msysdir[PATH_MAX];
     wchar_t exepath[PATH_MAX];
     wchar_t appid[64];
+    wchar_t temp_title[64];   // unique window title for HWND lookup
+    wchar_t real_title[64];   // final title shown to the user
+
+    // build a unique temporary title so we can find our window by title
+    // (survives mintty re-exec, unlike PID/TID)
+    swprintf(temp_title, ARRAYSIZE(temp_title), L"MSYS2 Fish Launcher %lu", GetCurrentProcessId());
+    swprintf(real_title, ARRAYSIZE(real_title), L"MSYS2 %ls Fish Shell", msystem);
 
     code = GetModuleFileName(NULL, exepath, sizeof(exepath) / sizeof(*exepath));
     if (code == 0)
@@ -449,11 +430,11 @@ int wmain(int argc, wchar_t* argv[])
 
 	code = swprintf(buf, buflen,
 			L"%ls\\usr\\bin\\mintty.exe -i '%ls' -o 'AppLaunchCmd=%ls'"
-			L" -o 'AppID=%ls' -o 'AppName=MSYS2 %ls Fish Shell'"
-			L" -t 'MSYS2 %ls Fish Shell' --store-taskbar-properties -- %ls %ls",
+			L" -o 'AppID=%ls' -o 'AppName=%ls'"
+			L" -t '%ls' --store-taskbar-properties -- %ls %ls",
 			msysdir, exepath, exepath,
-			appid, msystem,
-			msystem, L"/usr/bin/sh -lc '\"$@\"' sh", start_app);
+			appid, real_title,
+			temp_title, L"/usr/bin/sh -lc '\"$@\"' sh", start_app);
 	buflen *= 2;
     }
     if (code < 0)
@@ -554,8 +535,9 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     // main loop: watch the terminal, move it to the tray when minimized.
-    // mintty re-execs itself (new PID, same window), so once the window is
-    // found we track the HWND, not the process.
+    // We find our window by its unique temporary title (survives mintty
+    // re-exec), then switch to the real title and track the HWND.
+    int child_dead_no_window = 0; // counter: allows one extra poll after re-exec
     for (;;)
     {
         MSG msg;
@@ -570,13 +552,22 @@ int wmain(int argc, wchar_t* argv[])
             break;
         if (g_term == NULL)
         {
-            HWND term = FindTerminalWindow(child.dwProcessId);
-            if (term == NULL && WaitForSingleObject(child.hProcess, 0) == WAIT_OBJECT_0)
-                term = FindNewestMinttyWindow(); // mintty re-exec'd: find its new window
+            HWND term = FindWindowByTitle(temp_title);
             if (term != NULL)
+            {
                 g_term = term;
+                SetWindowTextW(g_term, real_title); // switch to the real title
+                child_dead_no_window = 0;
+            }
             else if (WaitForSingleObject(child.hProcess, 0) == WAIT_OBJECT_0)
-                break; // child exited and no window found
+            {
+                // child (original PID) is dead: either re-exec (window
+                // appears next poll) or everything closed. Give it one
+                // extra cycle before giving up.
+                if (child_dead_no_window > 0)
+                    break;
+                child_dead_no_window++;
+            }
         }
         else
         {
