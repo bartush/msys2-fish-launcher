@@ -2,19 +2,23 @@
 #+subtitle: Launches a fish shell terminal in a selected MSYS2 subsystem with tray icon support
 
 * Description
-A Windows GUI launcher that starts a *fish* shell inside an MSYS2
-subsystem (UCRT64, MINGW64, etc.) using mintty. Based on
+A Windows GUI launcher for *fish* shell in any MSYS2 subsystem, based on
 [[https://github.com/msys2/msys2-launcher][msys2-launcher]].
 
+The key difference from plain MSYS2/mintty: the terminal can live in the
+system tray. Minimize it and it vanishes from the taskbar, leaving only a
+fish icon (left-click to restore, right-click for =Show= / =Close
+terminal=). With =-tray= it starts hidden — handy for keeping a long-running
+process (e.g. a dev server) alive in the background without cluttering the
+taskbar.
+
 * Features
+- Tray icon: minimize to tray or start with =-tray=; plain mintty can't do this
 - Select MSYS2 subsystem via =-msystem= (default: UCRT64)
 - Run a one-shot fish command via =-c 'COMMAND'=
-- Tray icon: minimize to tray, left-click to restore, right-click menu
-  (=Show= / =Close terminal=)
 - Separate taskbar grouping and fish icon per subsystem
-- Job Object: all child processes (mintty/sh/fish) are killed on exit,
-  preventing orphaned processes
-- Launcher must reside in the MSYS2 root folder (auto-detected)
+- Job Object: kills the whole process tree on exit, no orphans
+- Must reside in the MSYS2 root folder (auto-detected)
 
 * Requirements
 - MSYS2 installed
@@ -32,12 +36,14 @@ msys2-fish-launcher.exe [OPTIONS]
   -msystem NAME    MSYS2 subsystem: MSYS, MINGW32, MINGW64, UCRT64,
                   CLANG64, CLANGARM64 (default: UCRT64)
   -c 'COMMAND'     Run COMMAND in fish and exit when done
+  -tray            Start the terminal hidden in the system tray
 
 Examples:
   msys2-fish-launcher.exe
   msys2-fish-launcher.exe -msystem MINGW64
   msys2-fish-launcher.exe -c 'echo hello'
-  msys2-fish-launcher.exe -msystem CLANG64 -c 'fish -i; echo done'
+  msys2-fish-launcher.exe -tray
+  msys2-fish-launcher.exe -msystem CLANG64 -tray -c 'fish -i; echo done'
 #+end_src
 
 * Build

@@ -23,6 +23,7 @@ static HWND g_term = NULL;      // terminal (mintty) window
 static HANDLE g_job = NULL;     // job object: kills entire process tree
 static int g_tray_visible = 0;
 static int g_closing = 0;
+static int g_start_tray = 0;   // start minimized to tray (-tray flag)
 static DWORD g_menu_shown_tick = 0; // suppress spurious left-clicks after context menu
 static NOTIFYICONDATAW g_nid;
 
@@ -273,6 +274,14 @@ static const wchar_t* ParseFishCommand(int argc, wchar_t* argv[])
     return NULL;
 }
 
+// Check for the -tray flag: start the terminal minimized to the tray.
+static void ParseTrayFlag(int argc, wchar_t* argv[])
+{
+    for (int i = 1; i < argc; i++)
+	if (wcscmp(argv[i], L"-tray") == 0)
+	    g_start_tray = 1;
+}
+
 // Escape a string for safe inclusion inside a shell single-quoted string.
 // Each ' is replaced with '\'' (end quote, escaped quote, restart quote).
 // Returns a malloc'd wide string, or NULL on allocation failure.
@@ -313,6 +322,8 @@ int wmain(int argc, wchar_t* argv[])
     const wchar_t* msystem = ParseSubsystem(argc, argv);
     if (msystem == NULL)
 	return __LINE__;
+
+    ParseTrayFlag(argc, argv);
 
     // Build the fish start command: plain "fish" (interactive) or
     // "fish -c '<cmd>'" (run command, then exit). The command is embedded
@@ -558,6 +569,12 @@ int wmain(int argc, wchar_t* argv[])
                 g_term = term;
                 SetWindowTextW(g_term, real_title); // switch to the real title
                 child_dead_no_window = 0;
+                if (g_start_tray)
+                {
+                    ShowWindow(g_term, SW_HIDE);
+                    TrayUpdateTooltip();
+                    TrayShow();
+                }
             }
             else if (WaitForSingleObject(child.hProcess, 0) == WAIT_OBJECT_0)
             {
@@ -579,7 +596,7 @@ int wmain(int argc, wchar_t* argv[])
                 TrayUpdateTooltip();
                 TrayShow();
             }
-            else if (g_tray_visible)
+            else if (g_tray_visible && IsWindowVisible(g_term))
                 TrayHide();
         }
         Sleep(TRAY_POLL_MS);
