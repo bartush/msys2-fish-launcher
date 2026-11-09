@@ -259,39 +259,106 @@ static void RegisterAppUserModel(const wchar_t* aumid)
 }
 
 // Parse command-line arguments to select the MSYS2 subsystem.
-// Recognized flags (mirroring msys2_shell.cmd):
-//   -msys | -msys2     -> MSYS
-//   -mingw32           -> MINGW32
-//   -mingw64           -> MINGW64
-//   -ucrt64            -> UCRT64
-//   -clang64           -> CLANG64
-//   -clangarm64        -> CLANGARM64
-// Default: UCRT64
+// Usage: -msystem NAME where NAME is one of:
+//   MSYS, MINGW32, MINGW64, UCRT64, CLANG64, CLANGARM64
+// Default (no -msystem): UCRT64
+// Returns NULL if -msystem was given an unknown value.
 static const wchar_t* ParseSubsystem(int argc, wchar_t* argv[])
 {
-    for (int i = 1; i < argc; i++)
+    for (int i = 1; i < argc - 1; i++)
     {
-	if (wcscmp(argv[i], L"-msys") == 0 || wcscmp(argv[i], L"-msys2") == 0)
-	    return L"MSYS";
-	if (wcscmp(argv[i], L"-mingw32") == 0)
-	    return L"MINGW32";
-	if (wcscmp(argv[i], L"-mingw64") == 0)
-	    return L"MINGW64";
-	if (wcscmp(argv[i], L"-ucrt64") == 0)
-	    return L"UCRT64";
-	if (wcscmp(argv[i], L"-clang64") == 0)
-	    return L"CLANG64";
-	if (wcscmp(argv[i], L"-clangarm64") == 0)
-	    return L"CLANGARM64";
+	if (wcscmp(argv[i], L"-msystem") == 0)
+	{
+		const wchar_t* name = argv[i + 1];
+		if (wcscmp(name, L"MSYS") == 0) return L"MSYS";
+		if (wcscmp(name, L"MINGW32") == 0) return L"MINGW32";
+		if (wcscmp(name, L"MINGW64") == 0) return L"MINGW64";
+		if (wcscmp(name, L"UCRT64") == 0) return L"UCRT64";
+		if (wcscmp(name, L"CLANG64") == 0) return L"CLANG64";
+		if (wcscmp(name, L"CLANGARM64") == 0) return L"CLANGARM64";
+		wchar_t msg[128];
+		swprintf(msg, ARRAYSIZE(msg), L"Unknown MSYS2 subsystem: %ls", name);
+		ShowError(L"Invalid -msystem value", msg, 0);
+		return NULL;
+	}
     }
     return L"UCRT64";
+}
+
+// Look for the -c flag and return the next argument as the fish command.
+// The command must be quoted so it arrives as a single argv entry:
+//   msys2-fish-launcher.exe -msystem UCRT64 -c 'cd /d/projects && git status'
+// Returns a pointer into argv (no copy), or NULL if -c was not given.
+static const wchar_t* ParseFishCommand(int argc, wchar_t* argv[])
+{
+    for (int i = 1; i < argc - 1; i++)
+    {
+	if (wcscmp(argv[i], L"-c") == 0)
+	    return argv[i + 1];
+    }
+    return NULL;
+}
+
+// Escape a string for safe inclusion inside a shell single-quoted string.
+// Each ' is replaced with '\'' (end quote, escaped quote, restart quote).
+// Returns a malloc'd wide string, or NULL on allocation failure.
+static wchar_t* EscapeForSingleQuotes(const wchar_t* src)
+{
+    size_t len = wcslen(src);
+    size_t extra = 0;
+    for (size_t i = 0; i < len; i++)
+	if (src[i] == L'\'')
+	    extra += 3;
+
+    wchar_t* dst = (wchar_t*)malloc((len + extra + 1) * sizeof(wchar_t));
+    if (dst == NULL)
+	return NULL;
+
+    wchar_t* p = dst;
+    for (size_t i = 0; i < len; i++)
+    {
+	if (src[i] == L'\'')
+	{
+	    *p++ = L'\'';
+	    *p++ = L'\\';
+	    *p++ = L'\'';
+	    *p++ = L'\'';
+	}
+	else
+	{
+	    *p++ = src[i];
+	}
+    }
+    *p = L'\0';
+    return dst;
 }
 
 int wmain(int argc, wchar_t* argv[])
 {
     // Select the MSYS2 subsystem from the command line (default UCRT64)
     const wchar_t* msystem = ParseSubsystem(argc, argv);
-    const wchar_t start_app[] = L"fish";
+    if (msystem == NULL)
+	return __LINE__;
+
+    // Build the fish start command: plain "fish" or "fish -c '<cmd>; fish -i'"
+    // The command is embedded directly in the command line, with single
+    // quotes escaped so it survives the sh layers intact. 'fish -i' keeps
+    // the terminal open after the command finishes.
+    wchar_t start_app_buf[4096] = L"fish";
+    {
+	const wchar_t* fishcmd = ParseFishCommand(argc, argv);
+	if (fishcmd != NULL)
+	{
+		wchar_t* escaped = EscapeForSingleQuotes(fishcmd);
+		if (escaped != NULL)
+		{
+			swprintf(start_app_buf, ARRAYSIZE(start_app_buf),
+				L"fish -c '%ls; fish -i'", escaped);
+			free(escaped);
+		}
+	}
+    }
+    const wchar_t* start_app = start_app_buf;
 
     PROCESS_INFORMATION child;
     int code;
