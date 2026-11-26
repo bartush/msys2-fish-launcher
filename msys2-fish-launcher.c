@@ -23,6 +23,7 @@ static HWND g_term = NULL;      // terminal (mintty) window
 static HANDLE g_job = NULL;     // job object: kills entire process tree
 static int g_tray_visible = 0;
 static int g_closing = 0;
+static int g_tray_mode = 0;    // minimize-to-tray mode (checkbox in tray menu)
 static int g_start_tray = 0;   // start minimized to tray (-tray flag)
 static DWORD g_menu_shown_tick = 0; // suppress spurious left-clicks after context menu
 static NOTIFYICONDATAW g_nid;
@@ -133,7 +134,24 @@ static void ShowTerminal(void)
         ShowWindow(g_term, SW_RESTORE);
         SetForegroundWindow(g_term);
     }
-    TrayHide();
+}
+
+// toggle minimize-to-tray mode and immediately apply the window state
+static void ToggleTrayMode(void)
+{
+    g_tray_mode = !g_tray_mode;
+    if (g_term == NULL || !IsWindow(g_term))
+        return;
+    if (g_tray_mode)
+    {
+        // turning on: hide the window into the tray
+        ShowWindow(g_term, SW_HIDE);
+    }
+    else if (!IsWindowVisible(g_term))
+    {
+        // turning off: show the window minimized in the taskbar
+        ShowWindow(g_term, SW_SHOWMINIMIZED);
+    }
 }
 
 static void CloseTerminal(void)
@@ -158,28 +176,27 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         else if (lParam == WM_RBUTTONUP)
         {
-            HMENU menu;
             POINT pt;
             UINT cmd;
 
             g_menu_shown_tick = GetTickCount();
-            menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING, 1, L"Show");
-            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(menu, MF_STRING, 2, L"Close terminal");
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd);
-            cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+            HMENU menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING | (g_tray_mode ? MF_CHECKED : 0), 1, L"Minimize to tray");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(menu, MF_STRING, 2, L"Show");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(menu, MF_STRING, 3, L"Close terminal");
+            cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, NULL);
             DestroyMenu(menu);
-            // MSDN: must send WM_COMMAND after TrackPopupMenu
-            SendMessageW(hwnd, WM_COMMAND, cmd, 0);
+            if (cmd == 1)
+                ToggleTrayMode();
+            else if (cmd == 2)
+                ShowTerminal();
+            else if (cmd == 3)
+                CloseTerminal();
         }
-        return 0;
-    case WM_COMMAND:
-        if (wParam == 1)
-            ShowTerminal();
-        else if (wParam == 2)
-            CloseTerminal();
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -279,7 +296,10 @@ static void ParseTrayFlag(int argc, wchar_t* argv[])
 {
     for (int i = 1; i < argc; i++)
 	if (wcscmp(argv[i], L"-tray") == 0)
+	{
 	    g_start_tray = 1;
+	    g_tray_mode = 1;
+	}
 }
 
 // Escape a string for safe inclusion inside a shell single-quoted string.
@@ -569,12 +589,12 @@ int wmain(int argc, wchar_t* argv[])
                 g_term = term;
                 SetWindowTextW(g_term, real_title); // switch to the real title
                 child_dead_no_window = 0;
+                // the tray icon is always visible: it hosts the menu with
+                // the minimize-to-tray checkbox, Show and Close terminal
+                TrayUpdateTooltip();
+                TrayShow();
                 if (g_start_tray)
-                {
                     ShowWindow(g_term, SW_HIDE);
-                    TrayUpdateTooltip();
-                    TrayShow();
-                }
             }
             else if (WaitForSingleObject(child.hProcess, 0) == WAIT_OBJECT_0)
             {
@@ -590,14 +610,19 @@ int wmain(int argc, wchar_t* argv[])
         {
             if (!IsWindow(g_term))
                 break; // terminal window destroyed
-            if (IsIconic(g_term))
+            if (IsIconic(g_term) && g_tray_mode)
             {
+                // minimize-to-tray mode: hide the window entirely
                 ShowWindow(g_term, SW_HIDE);
-                TrayUpdateTooltip();
-                TrayShow();
             }
-            else if (g_tray_visible && IsWindowVisible(g_term))
-                TrayHide();
+            else if (!g_tray_mode && !IsWindowVisible(g_term))
+            {
+                // tray mode was turned off: show the window minimized
+                // in the taskbar (not restored on top of everything)
+                ShowWindow(g_term, SW_SHOWMINIMIZED);
+            }
+            // keep the tooltip in sync with the live window title
+            TrayUpdateTooltip();
         }
         Sleep(TRAY_POLL_MS);
     }
