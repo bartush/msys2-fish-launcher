@@ -22,7 +22,6 @@ static HICON g_hicon = NULL;    // tray icon, loaded from resources
 static HWND g_term = NULL;      // terminal (mintty) window
 static HWINEVENTHOOK g_title_hook = NULL; // WinEvent hook: tooltip sync on title change
 static HANDLE g_job = NULL;     // job object: kills entire process tree
-static int g_closing = 0;
 static int g_tray_mode = 0;    // minimize-to-tray mode (checkbox in tray menu)
 static int g_start_tray = 0;   // start minimized to tray (-tray flag)
 static DWORD g_menu_shown_tick = 0; // suppress spurious left-clicks after context menu
@@ -155,7 +154,8 @@ static void ToggleTrayMode(void)
 
 static void CloseTerminal(void)
 {
-    g_closing = 1;
+    // kill the process tree; the main loop exits on its own when it
+    // sees the dead child and no window (child_dead_no_window grace cycle)
     TerminateJobObject(g_job, 0);
     g_term = NULL;
 }
@@ -571,8 +571,6 @@ int wmain(int argc, wchar_t* argv[])
             DispatchMessageW(&msg);
         }
 
-        if (g_closing)
-            break;
         if (g_term == NULL)
         {
             HWND term = FindWindowByTitle(temp_title);
