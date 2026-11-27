@@ -22,7 +22,6 @@ static HICON g_hicon = NULL;    // tray icon, loaded from resources
 static HWND g_term = NULL;      // terminal (mintty) window
 static HWINEVENTHOOK g_title_hook = NULL; // WinEvent hook: tooltip sync on title change
 static HANDLE g_job = NULL;     // job object: kills entire process tree
-static int g_tray_visible = 0;
 static int g_closing = 0;
 static int g_tray_mode = 0;    // minimize-to-tray mode (checkbox in tray menu)
 static int g_start_tray = 0;   // start minimized to tray (-tray flag)
@@ -108,7 +107,7 @@ static void TrayUpdateTooltip(void)
 
 // WinEvent callback: fires only when a window title actually changes.
 // Replaces the per-tick TrayUpdateTooltip() polling.
-static void CALLBACK NameChangeHook(HWINEVENTHOOK, DWORD,
+static void CALLBACK TitleChangeHook(HWINEVENTHOOK, DWORD,
                                     HWND hwnd, LONG, LONG,
                                     DWORD, DWORD)
 {
@@ -118,22 +117,13 @@ static void CALLBACK NameChangeHook(HWINEVENTHOOK, DWORD,
 
 static void TrayShow(void)
 {
-    if (g_tray_visible)
-        return;
     if (Shell_NotifyIconW(NIM_ADD, &g_nid) == 0)
-    {
         ShowLastError(L"Could not add tray icon");
-        return;
-    }
-    g_tray_visible = 1;
 }
 
 static void TrayHide(void)
 {
-    if (!g_tray_visible)
-        return;
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
-    g_tray_visible = 0;
 }
 
 static void ShowTerminal(void)
@@ -602,7 +592,7 @@ int wmain(int argc, wchar_t* argv[])
                 // watch for title changes: keeps the tray tooltip in sync
                 // without polling (fires on every real rename)
                 g_title_hook = SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE,
-                                              NULL, NameChangeHook, 0, 0,
+                                              NULL, TitleChangeHook, 0, 0,
                                               WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
                 child_dead_no_window = 0;
                 // the tray icon is always visible: it hosts the menu with
