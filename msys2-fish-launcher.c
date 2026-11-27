@@ -20,6 +20,7 @@ int _CRT_glob = 0;
 static HWND g_hwnd = NULL;      // message-only window for tray callbacks
 static HICON g_hicon = NULL;    // tray icon, loaded from resources
 static HWND g_term = NULL;      // terminal (mintty) window
+static HWINEVENTHOOK g_title_hook = NULL; // WinEvent hook: tooltip sync on title change
 static HANDLE g_job = NULL;     // job object: kills entire process tree
 static int g_tray_visible = 0;
 static int g_closing = 0;
@@ -103,6 +104,16 @@ static void TrayUpdateTooltip(void)
     wcsncpy(g_nid.szTip, title, ARRAYSIZE(g_nid.szTip) - 1);
     g_nid.szTip[ARRAYSIZE(g_nid.szTip) - 1] = L'\0';
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+}
+
+// WinEvent callback: fires only when a window title actually changes.
+// Replaces the per-tick TrayUpdateTooltip() polling.
+static void CALLBACK NameChangeHook(HWINEVENTHOOK, DWORD,
+                                    HWND hwnd, LONG, LONG,
+                                    DWORD, DWORD)
+{
+    if (hwnd == g_term)
+        TrayUpdateTooltip();
 }
 
 static void TrayShow(void)
@@ -588,6 +599,11 @@ int wmain(int argc, wchar_t* argv[])
             {
                 g_term = term;
                 SetWindowTextW(g_term, real_title); // switch to the real title
+                // watch for title changes: keeps the tray tooltip in sync
+                // without polling (fires on every real rename)
+                g_title_hook = SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE,
+                                              NULL, NameChangeHook, 0, 0,
+                                              WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
                 child_dead_no_window = 0;
                 // the tray icon is always visible: it hosts the menu with
                 // the minimize-to-tray checkbox, Show and Close terminal
@@ -621,12 +637,12 @@ int wmain(int argc, wchar_t* argv[])
                 // in the taskbar (not restored on top of everything)
                 ShowWindow(g_term, SW_SHOWMINIMIZED);
             }
-            // keep the tooltip in sync with the live window title
-            TrayUpdateTooltip();
         }
         Sleep(TRAY_POLL_MS);
     }
 
+    if (g_title_hook != NULL)
+        UnhookWinEvent(g_title_hook);
     TrayHide();
     DestroyWindow(g_hwnd);
     if (g_job != NULL)
