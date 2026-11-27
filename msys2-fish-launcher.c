@@ -96,7 +96,7 @@ static void TrayUpdateTooltip(void)
 {
     wchar_t title[256];
 
-    if (g_term == NULL || !IsWindow(g_term))
+    if (!IsWindow(g_term))
         return;
     if (GetWindowTextW(g_term, title, 256) == 0)
         return;
@@ -128,9 +128,7 @@ static void TrayHide(void)
 
 static void ShowTerminal(void)
 {
-    if (g_closing)
-        return;
-    if (g_term != NULL && IsWindow(g_term))
+    if (IsWindow(g_term))
     {
         ShowWindow(g_term, SW_RESTORE);
         SetForegroundWindow(g_term);
@@ -141,7 +139,7 @@ static void ShowTerminal(void)
 static void ToggleTrayMode(void)
 {
     g_tray_mode = !g_tray_mode;
-    if (g_term == NULL || !IsWindow(g_term))
+    if (!IsWindow(g_term))
         return;
     if (g_tray_mode)
     {
@@ -158,8 +156,7 @@ static void ToggleTrayMode(void)
 static void CloseTerminal(void)
 {
     g_closing = 1;
-    if (g_job != NULL)
-        TerminateJobObject(g_job, 0);
+    TerminateJobObject(g_job, 0);
     g_term = NULL;
 }
 
@@ -247,7 +244,6 @@ static void RegisterAppUserModel(const wchar_t* aumid)
     if (RegCreateKeyExW(HKEY_CURRENT_USER, regpath, 0, NULL, 0, KEY_WRITE, NULL, &hkey, NULL) != ERROR_SUCCESS)
         return;
     RegSetValueExW(hkey, L"DisplayName", 0, REG_SZ, (const BYTE*)display_name, sizeof(display_name));
-    RegDeleteValueW(hkey, L"IconUri"); // clean up from earlier builds
     RegCloseKey(hkey);
 }
 
@@ -413,11 +409,6 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     msysdirhash = (wchar_t*)alloca(10 * sizeof(wchar_t)); // dot + unsigned int as %x + null
-    if (msysdirhash == NULL)
-    {
-	ShowError(L"Could not allocate memory", L"", 0);
-	return __LINE__;
-    }
     code = swprintf(msysdirhash, 10, L".%8x", APHash(msysdir, wcslen(msysdir)));
     if (code < 0)
     {
@@ -547,7 +538,7 @@ int wmain(int argc, wchar_t* argv[])
             return __LINE__;
         }
 
-        if (ExtractIconExW(exepath, 0, &g_hicon, NULL, 1) != 1 || g_hicon == NULL)
+        if (ExtractIconExW(exepath, 0, &g_hicon, NULL, 1) != 1)
         {
             ShowLastError(L"Could not load tray icon");
             TerminateJobObject(g_job, 0);
@@ -635,8 +626,7 @@ int wmain(int argc, wchar_t* argv[])
         UnhookWinEvent(g_title_hook);
     TrayHide();
     DestroyWindow(g_hwnd);
-    if (g_job != NULL)
-        CloseHandle(g_job);
+    CloseHandle(g_job);
     CloseHandle(child.hProcess);
     CloseHandle(child.hThread);
     return 0;
