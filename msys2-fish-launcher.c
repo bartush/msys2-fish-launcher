@@ -24,7 +24,6 @@ static HWINEVENTHOOK g_title_hook = NULL; // WinEvent hook: tooltip sync on titl
 static HANDLE g_job = NULL;     // job object: kills entire process tree
 static int g_tray_mode = 0;    // minimize-to-tray mode (checkbox in tray menu)
 static int g_start_tray = 0;   // start minimized to tray (-tray flag)
-static DWORD g_menu_shown_tick = 0; // suppress spurious left-clicks after context menu
 static NOTIFYICONDATAW g_nid;
 
 static void ShowError(const wchar_t* desc, const wchar_t* err, const long code)
@@ -134,6 +133,14 @@ static void ShowTerminal(void)
     }
 }
 
+// same as a left click on the tray icon in the minimize direction:
+// minimize; if tray mode is on, the main loop tucks it into the tray
+static void HideTerminal(void)
+{
+    if (IsWindow(g_term))
+        ShowWindow(g_term, SW_MINIMIZE);
+}
+
 // toggle minimize-to-tray mode and immediately apply the window state
 static void ToggleTrayMode(void)
 {
@@ -165,25 +172,31 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     switch (msg)
     {
     case WM_TRAYICON:
-        if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK)
+        // left click toggles: restore if minimized, minimize if visible.
+        // A real click always has a DOWN, while the artifact left over
+        // after the context menu closes is an UP without a DOWN
+        if (lParam == WM_LBUTTONDOWN)
         {
-            // ignore spurious left-clicks within 1s after context menu
-            if (GetTickCount() - g_menu_shown_tick < 1000)
+            if (!IsWindow(g_term))
                 return 0;
-            ShowTerminal();
+            // a hidden (tray) window is not iconic, so check visibility too
+            if (IsIconic(g_term) || !IsWindowVisible(g_term))
+                ShowTerminal();
+            else
+                ShowWindow(g_term, SW_MINIMIZE);
         }
         else if (lParam == WM_RBUTTONUP)
         {
             POINT pt;
             UINT cmd;
 
-            g_menu_shown_tick = GetTickCount();
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd);
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | (g_tray_mode ? MF_CHECKED : 0), 1, L"Minimize to tray");
             AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(menu, MF_STRING, 2, L"Show");
+            AppendMenuW(menu, MF_STRING, 4, L"Hide");
             AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(menu, MF_STRING, 3, L"Close terminal");
             cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, NULL);
@@ -192,6 +205,8 @@ static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 ToggleTrayMode();
             else if (cmd == 2)
                 ShowTerminal();
+            else if (cmd == 4)
+                HideTerminal();
             else if (cmd == 3)
                 CloseTerminal();
         }
